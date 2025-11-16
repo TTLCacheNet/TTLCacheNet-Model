@@ -4,6 +4,10 @@ FROM python:3.12-slim
 # ---- 2. 작업 디렉토리 설정 ----
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
 # ---- 3. uv 설치 ----
 RUN pip install --no-cache-dir uv
 
