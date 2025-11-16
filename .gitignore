@@ -15,10 +15,3 @@ data/
 *.csv
 *.xlsx
 *.jsonl
-
-# ----- Artifacts (optional keep only final) -----
-!artifacts/encoder.keras
-!artifacts/reg_next.pkl
-!artifacts/object_ids.npy
-!artifacts/meta.json
-artifacts/*
