@@ -29,8 +29,8 @@ if not {"object_ID", "request_time"}.issubset(df.columns):
 df = df.sort_values("request_time").reset_index(drop=True)
 
 # ---------- 파라미터(데이터 적으면 값 줄이세요) ----------
-m, k = 10, 5
-window_size = 100
+m, k = 6, 3
+window_size = 15
 step = 10
 
 # (중요) object_ids는 "고유값"이어야 합니다.
