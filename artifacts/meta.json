@@ -1,7 +1,7 @@
 {
-  "m": 10,
-  "k": 5,
-  "window_size": 100,
+  "m": 6,
+  "k": 3,
+  "window_size": 15,
   "step": 10,
   "modelVersion": "ttl-lstm-gbdt-2025-11-15"
 }

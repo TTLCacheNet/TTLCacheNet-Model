@@ -103,6 +103,9 @@ def build_last_window_from_csv(csv_path: str,
     """
     total_needed = window_size * (m + k) + step  # 여유
     df = read_tail_for_windows(csv_path, total_needed)
+    print("df length:", len(df))
+    df = df.rename(columns={"objectId": "object_ID"})
+    print(df["object_ID"].value_counts())
     if df.empty or len(df) < window_size * (m + k):
         return np.zeros((0, m, 1)), {oid: i for i, oid in enumerate(object_ids)}
 
