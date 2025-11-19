@@ -7,6 +7,7 @@ from .csv_logger import SingleCSVLogger
 from .feature_builder import build_last_window_from_csv
 from .artifacts_loader import Artifacts, ttl_from_next_interval
 import numpy as np
+import traceback
 
 CSV_PATH = "data/all_events.csv"
 ART_DIR  = "artifacts"
@@ -62,13 +63,17 @@ async def infer_ttl(req: ModelRequestDTO):
             ttl = 300
             conf = 0.2
         else:
+            # 2) LSTM이 기대하는 feature 차원 맞추기 (feature가 2개 이상이면 첫 번째만 사용)
+            if X_last.shape[-1] > 1:
+                X_last = X_last[..., :1]  # (batch, m, 1)로 슬라이스
+            X_last = X_last.astype("float32")
+
             # 3) 임베딩 → 다음 간격 예측
             emb = art.extract_embeddings(X_last)  # (1, 64)
             next_arrival = float(art.predict_next_interval(emb)[0])  # seconds
 
-            # 4) 요청 objectId에 초점을 맞춘 TTL (간단 버전: 전역 신호를 그대로 TTL로)
-            #    더 정교하게 하려면 objectId별 신호를 분리해 학습/추론하도록 파이프라인 확장
-            ttl = ttl_from_next_interval(next_arrival, min_ttl=300, max_ttl=86400)
+            # 4) 요청 objectId에 초점을 맞춘 TTL
+            ttl = ttl_from_next_interval(next_arrival, min_ttl=1, max_ttl=86400)
             conf = 0.7  # 가벼운 기본값. calibration을 붙였다면 여기 반영
 
         resp = ModelResponseDTO(
@@ -88,4 +93,7 @@ async def infer_ttl(req: ModelRequestDTO):
 
         return resp
     except Exception as e:
+        print("==== Inference Failed TraceBack ====")
+        traceback.print_exc()
+        print("Exception object:", repr(e))
         raise HTTPException(status_code=500, detail=f"inference_failed: {e}")

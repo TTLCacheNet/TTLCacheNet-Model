@@ -24,7 +24,7 @@ def build_simple_sequences(df, object_ids, m, k, window_size, step, time_col="re
 
     # 2) 시간 배열/객체 배열 만들기
     ts = df['request_time'].to_numpy().astype(float)  # seconds (float)
-    obj = df['object_ID'].to_numpy()
+    obj = df['object_id'].to_numpy()
     id2idx = {o: i for i, o in enumerate(object_ids)}
     d = len(object_ids)
 
@@ -100,12 +100,32 @@ def build_last_window_from_csv(csv_path: str,
     """
     서빙용: 최근 한 윈도우 묶음에서 X_seq 하나만 생성해 돌려줍니다.
     return: (X_seq_last (1, m, 1), idx_map(object_id -> index))
-    """
+    """    
     total_needed = window_size * (m + k) + step  # 여유
     df = read_tail_for_windows(csv_path, total_needed)
     print("df length:", len(df))
-    df = df.rename(columns={"objectId": "object_ID"})
-    print(df["object_ID"].value_counts())
+    print("df.columns:", df.columns)
+    print(df.head())
+
+    # CSV에는 object_ID로 와도, 내부에서는 object_id로 통일
+    if "object_ID" in df.columns:
+        df = df.rename(columns={"object_ID": "object_id"})
+    if "objectId" in df.columns:
+        df = df.rename(columns={"objectId": "object_id"})
+
+    if "request_time" in df.columns:
+        print("request_time range:",
+            df["request_time"].min(),
+            df["request_time"].max())
+
+    # 2. 유효한 object_id만 필터
+    valid_ids = set(int(x) for x in object_ids)
+    if "object_id" in df.columns:
+        df = df[df["object_id"].isin(valid_ids)]
+
+    # 3. 디버깅용 출력은 이제 전부 object_id 기준으로
+    if "object_id" in df.columns:
+        print(df["object_id"].value_counts())
     if df.empty or len(df) < window_size * (m + k):
         return np.zeros((0, m, 1)), {oid: i for i, oid in enumerate(object_ids)}
 
