@@ -30,7 +30,7 @@ def build_simple_sequences(df, object_ids, m, k, window_size, step, time_col="re
 
     # 3) 슬라이딩 윈도우
     total = window_size * (m + k)
-    for i in range(0, len(df) - total, step):
+    for i in range(0, len(df) - total + 1, step):
         seq = obj[i : i + total]
         ts_seq = ts[i : i + total]
 
@@ -98,41 +98,85 @@ def build_last_window_from_csv(csv_path: str,
                                m: int, k: int,
                                window_size: int, step: int) -> Tuple[np.ndarray, np.ndarray]:
     """
-    서빙용: 최근 한 윈도우 묶음에서 X_seq 하나만 생성해 돌려줍니다.
-    return: (X_seq_last (1, m, 1), idx_map(object_id -> index))
+    서빙용: 가장 최근의 m개 윈도우(과거 데이터)만 사용하여 X_seq를 생성합니다.
+    미래 데이터(k)를 기다리지 않고, 현재 시점의 예측을 수행합니다.
+    return: (X_seq_last (1, m, 1), idx_map)
     """    
-    total_needed = window_size * (m + k) + step  # 여유
-    df = read_tail_for_windows(csv_path, total_needed)
-    print("df length:", len(df))
-    print("df.columns:", df.columns)
-    print(df.head())
-
-    # CSV에는 object_ID로 와도, 내부에서는 object_id로 통일
+    # 필요한 과거 데이터 길이: m * window_size
+    # (step은 여기서 무시하고 무조건 가장 최근 데이터를 봅니다)
+    past_needed = m * window_size
+    
+    # 여유있게 읽기
+    df = read_tail_for_windows(csv_path, past_needed + 50)
+    
+    # 1. 컬럼 정리
     if "object_ID" in df.columns:
         df = df.rename(columns={"object_ID": "object_id"})
     if "objectId" in df.columns:
         df = df.rename(columns={"objectId": "object_id"})
-
-    if "request_time" in df.columns:
-        print("request_time range:",
-            df["request_time"].min(),
-            df["request_time"].max())
-
-    # 2. 유효한 object_id만 필터
+        
+    # 2. 유효 object_id 필터
     valid_ids = set(int(x) for x in object_ids)
     if "object_id" in df.columns:
         df = df[df["object_id"].isin(valid_ids)]
+        
+    # 3. 데이터 부족 시 처리
+    if len(df) < past_needed:
+        # 데이터가 모자라면 0으로 채워진 더미 반환 (혹은 에러 처리)
+        id2idx = {o: i for i, o in enumerate(object_ids)}
+        return np.zeros((0, m, 1)), id2idx
 
-    # 3. 디버깅용 출력은 이제 전부 object_id 기준으로
-    if "object_id" in df.columns:
-        print(df["object_id"].value_counts())
-    if df.empty or len(df) < window_size * (m + k):
-        return np.zeros((0, m, 1)), {oid: i for i, oid in enumerate(object_ids)}
-
-    X_seq, _, _ = build_simple_sequences(df, object_ids, m, k, window_size, step, time_col="request_time")
-    if X_seq.shape[0] == 0:
-        return np.zeros((0, m, 1)), {oid: i for i, oid in enumerate(object_ids)}
-
-    X_last = X_seq[-1:,:,:]  # 맨 마지막 배치 1개만 사용
+    # 4. 가장 최근 past_needed 개수만 취함
+    df = df.tail(past_needed).sort_values("request_time")
+    
+    ts = df['request_time'].to_numpy().astype(float)
+    obj = df['object_id'].to_numpy()
+    
     id2idx = {o: i for i, o in enumerate(object_ids)}
-    return X_last, id2idx
+    d = len(object_ids)
+    
+    # 5. Feature Building (X only)
+    # m개의 윈도우를 순회하며 feature 생성
+    x_seq = []
+    for j in range(m):
+        # j번째 윈도우 (0 ~ window_size, window_size ~ 2*window_size, ...)
+        w_obj = obj[j*window_size : (j+1)*window_size]
+        w_ts  = ts[j*window_size : (j+1)*window_size]
+        
+        counts = np.zeros(d, dtype=float)
+        unique, cnts = np.unique(w_obj, return_counts=True)
+        for u, c in zip(unique, cnts):
+            if u in id2idx:
+                counts[id2idx[u]] = c / window_size
+        
+        if len(w_ts) >= 2:
+            gap_mean = float(np.mean(np.diff(w_ts)))
+        else:
+            gap_mean = float(window_size)
+        gap_mean = 0.0 if not np.isfinite(gap_mean) else gap_mean
+        gap_vec = np.full_like(counts, gap_mean, dtype=float)
+        
+        # (d, 2)
+        x_seq.append(np.stack([counts, gap_vec], axis=1))
+        
+    # Stack -> (m, d, 2) -> (d, m, 2)
+    X_out = np.stack(x_seq, axis=0).transpose(1, 0, 2)
+    
+    # Batch dimension 추가 -> (1, d, m, 2) ?? 
+    # 기존 build_simple_sequences 반환값은 (N, m, 1) 형태였음 (ensure_3d_single_channel 전)
+    # 하지만 train.py에서 ensure_3d_single_channel로 (N, m, 1)로 바꿈.
+    # 여기서도 (1, m, 1) 형태로 맞춰줘야 함?
+    # 아니, build_simple_sequences의 리턴은:
+    # X_seq.append(np.stack(x_seq, axis=0).transpose(1, 0, 2)) -> (d, m, 2)
+    # 그리고 np.concatenate(X_seq, axis=0) -> (N*d, m, 2) 가 아니라...
+    # 아, build_simple_sequences 코드를 보면:
+    # X_seq 리스트에 (d, m, 2)를 append 함.
+    # 마지막에 np.concatenate(X_seq, axis=0) 하면 (N*d, m, 2)가 됨.
+    # 즉, (배치크기, m, 2) 형태.
+    
+    # 우리는 배치크기=1 (사실상 d개의 object에 대한 1개의 시점)이 아니라
+    # "현재 시점"에서의 d개 object 각각에 대한 feature가 필요함.
+    # model_api.py에서는 X_last[..., :1] 로 슬라이싱해서 씀.
+    # 즉 (d, m, 2)를 리턴하면 됨. (d가 배치 차원 역할)
+    
+    return X_out, id2idx

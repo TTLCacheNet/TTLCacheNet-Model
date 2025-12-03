@@ -50,31 +50,52 @@ async def infer_ttl(req: ModelRequestDTO):
     req_id = uuid.uuid4().hex
 
     try:
-        # 1) 단일 CSV에 먼저 기록(모델 추론 결과도 기록해야 하므로, 이번에는 사후에 한 번 더 업데이트 X → 한번에 기록)
-        #    여기서는 모델 응답이 생성된 뒤 한번에 기록합니다.
-
-        # 2) 최근 윈도우에서 특징 생성
         m = int(art.meta["m"]); k = int(art.meta["k"])
-        window_size = int(art.meta["window_size"]); step = int(art.meta["step"])
-        X_last, id2idx = build_last_window_from_csv(CSV_PATH, art.object_ids, m, k, window_size, step)
+        window_size = int(art.meta["window_size"])
 
-        if X_last.shape[0] == 0:
-            # 아직 데이터가 충분치 않으면 보수적 TTL 반환
+        # 최근 이벤트 기반 feature 전체 (모든 object에 대해)
+        X_last_all, id2idx = build_last_window_from_csv(
+            CSV_PATH, art.object_ids, m, k, window_size, 1
+        )
+
+        # 아직 학습할 만큼 데이터가 없는 경우 → 보수적인 TTL
+        if X_last_all.shape[0] == 0:
             ttl = 300
             conf = 0.2
         else:
-            # 2) LSTM이 기대하는 feature 차원 맞추기 (feature가 2개 이상이면 첫 번째만 사용)
-            if X_last.shape[-1] > 1:
-                X_last = X_last[..., :1]  # (batch, m, 1)로 슬라이스
-            X_last = X_last.astype("float32")
+            # 요청 objectId를 int로 변환 (art.object_ids도 int일 것으로 가정)
+            try:
+                oid = int(req.objectId)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="invalid_object_id")
 
-            # 3) 임베딩 → 다음 간격 예측
-            emb = art.extract_embeddings(X_last)  # (1, 64)
-            next_arrival = float(art.predict_next_interval(emb)[0])  # seconds
+            if oid not in id2idx:
+                # 모델이 모르는 object → 보수적인 기본값
+                ttl = 300
+                conf = 0.2
+            else:
+                idx = id2idx[oid]
 
-            # 4) 요청 objectId에 초점을 맞춘 TTL
-            ttl = ttl_from_next_interval(next_arrival, min_ttl=1, max_ttl=86400)
-            conf = 0.7  # 가벼운 기본값. calibration을 붙였다면 여기 반영
+                # 해당 object 한 줄만 뽑기: (1, m, feature)
+                x_single = X_last_all[idx : idx + 1, :, :]  # (1, m, 2)
+
+                # LSTM이 1채널만 기대하면 첫 채널만 사용
+                if x_single.shape[-1] > 1:
+                    x_single = x_single[..., :1]   # (1, m, 1)
+
+                x_single = x_single.astype("float32")
+
+                # 3) 임베딩 → 다음 간격 예측 (해당 object에 대해서만)
+                emb = art.extract_embeddings(x_single)          # (1, 64) 예상
+                next_arrival = float(art.predict_next_interval(emb)[0])  # seconds
+
+                # 4) object별 TTL 계산
+                ttl = ttl_from_next_interval(
+                    next_arrival,
+                    min_ttl=1,
+                    max_ttl=86400
+                )
+                conf = 0.7
 
         resp = ModelResponseDTO(
             ttlSec=ttl,
@@ -83,7 +104,6 @@ async def infer_ttl(req: ModelRequestDTO):
             requestId=req_id
         )
 
-        # 5) 최종 로그 기록
         await logger.append({
             "request_id": req_id,
             "object_ID": req.objectId,
@@ -92,8 +112,10 @@ async def infer_ttl(req: ModelRequestDTO):
         })
 
         return resp
+
     except Exception as e:
         print("==== Inference Failed TraceBack ====")
         traceback.print_exc()
         print("Exception object:", repr(e))
         raise HTTPException(status_code=500, detail=f"inference_failed: {e}")
+
