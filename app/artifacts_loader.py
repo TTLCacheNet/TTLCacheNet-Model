@@ -26,7 +26,27 @@ class Artifacts:
 
 def ttl_from_next_interval(next_sec: float,
                            min_ttl: int = 300, max_ttl: int = 86400) -> int:
-    if not np.isfinite(next_sec) or next_sec <= 0:
+    """
+    Inverse TTL Logic:
+    - Frequent requests (Small Gap) -> Long TTL
+    - Rare requests (Large Gap) -> Short TTL
+    Formula: TTL = K / Gap
+    K = 36000 (Gap=10s -> TTL=1h)
+    """
+    if not np.isfinite(next_sec):
         return min_ttl
-    ttl = int(round(next_sec))
+    
+    # If gap is <= 0, it means immediate arrival expected -> Max TTL
+    if next_sec <= 0:
+        return max_ttl
+
+    # Constant K: Gap * TTL = 36000
+    # e.g. Gap=1s -> TTL=36000s (10h)
+    #      Gap=60s -> TTL=600s (10m)
+    #      Gap=3600s -> TTL=10s
+    K = 36000.0
+    
+    val = K / next_sec
+    ttl = int(round(val))
+    
     return max(min_ttl, min(ttl, max_ttl))
